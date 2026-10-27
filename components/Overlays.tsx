@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Track } from "@/lib/session";
-import { imgOk, useArt } from "@/lib/utils";
+import { appleMusicUrl, imgOk, useArt, youtubeMusicUrl } from "@/lib/utils";
 import { Cover } from "./Cards";
 
 export const ICON = {
@@ -80,23 +80,16 @@ export function MiniPlayer({
 /* Apple Music style song page (top) with the radio player (bottom) */
 export function SongSheet({
   open, track, fallbackTitle, fallbackSub, canJump, onJump, onChoose, onClose,
-  dockTitle, dockSub, progress, bigIcon, bigDisabled, onToggle,
+  dockTitle, dockSub, progress, bigIcon, bigDisabled, onToggle, onShare,
 }: {
   open: boolean; track: Track | null; fallbackTitle: string; fallbackSub: string;
   canJump: boolean; onJump: () => void; onChoose: () => void; onClose: () => void;
   dockTitle: string; dockSub: string; progress: ReactNode; bigIcon: ReactNode; bigDisabled: boolean; onToggle: () => void;
+  onShare: () => void;
 }) {
   const url = useArt(track);
   const startY = useRef<number | null>(null);
   const bg = url ? `url("${url}")` : "radial-gradient(circle at 30% 30%,#2bff8855,#9b6bff55,#000)";
-
-  const share = async () => {
-    const link = location.origin + location.pathname;
-    try {
-      if (navigator.share) await navigator.share({ title: fallbackTitle, url: link });
-      else await navigator.clipboard.writeText(link);
-    } catch { }
-  };
 
   return (
     <div
@@ -116,7 +109,7 @@ export function SongSheet({
             <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M15 5l-7 7 7 7" /></svg>
           </button>
           <div className="gpill">
-            <button onClick={share} aria-label="Share">
+            <button onClick={onShare} aria-label="Share">
               <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v12M7 8l5-5 5 5" /><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7" /></svg>
             </button>
           </div>
@@ -132,7 +125,7 @@ export function SongSheet({
             <button className="playpill" onClick={onChoose} style={{ visibility: track ? "visible" : "hidden" }}>
               {ICON.play}Play
             </button>
-            <button className={`gcirc${track ? "" : " off"}`} onClick={onChoose} aria-label="Add">
+            <button className={`gcirc${track ? "" : " off"}`} onClick={onChoose} aria-label="More ways to listen">
               <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
             </button>
           </div>
@@ -151,20 +144,25 @@ export function SongSheet({
   );
 }
 
-/* Glass picker: Apple Music / Spotify / YouTube Music */
+/* Resolve the direct Apple Music link ahead of the tap (so iPhone opens the Music app) */
+function useAppleUrl(track: Track | null) {
+  const [state, setState] = useState<{ key: string; url: string | null }>({ key: "", url: null });
+  const key = track ? `${track.artist}|${track.title}` : "";
+  useEffect(() => {
+    if (!track) return;
+    let alive = true;
+    appleMusicUrl(track).then((url) => alive && setState({ key, url }));
+    return () => {
+      alive = false;
+    };
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  return state.key === key ? state.url : null;
+}
+
+/* Glass picker: Apple Music first */
 export function Chooser({ track, onClose }: { track: Track | null; onClose: () => void }) {
   const url = useArt(track);
-  let q = "";
-  if (track) {
-    const song = track.title.replace(/\s*\((Extended|Remix)\)/i, (m) => (/remix/i.test(m) ? " Remix" : ""));
-    const who = track.artist.split(/ ft\.| feat\.|,| & /)[0];
-    q = encodeURIComponent(`${song} ${who}`);
-  }
-  const links = [
-    { name: "Apple Music", href: `https://music.apple.com/us/search?term=${q}`, style: { background: "linear-gradient(135deg,#ff5f6d,#fa233b)" }, glyph: "♪" },
-    { name: "Spotify", href: `https://open.spotify.com/search/${q}`, style: { background: "#1ed760", color: "#000" }, glyph: "♪" },
-    { name: "YouTube Music", href: `https://music.youtube.com/search?q=${q}`, style: { background: "#ff0033" }, glyph: "▶" },
-  ];
+  const apple = useAppleUrl(track);
   return (
     <div className={`chooser${track ? " open" : ""}`} onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="ch-card">
@@ -172,11 +170,14 @@ export function Chooser({ track, onClose }: { track: Track | null; onClose: () =
           {url ? <img src={url} alt="" /> : <span className="ch-blank" />}
           <div><b>{track?.title}</b><span>{track?.artist}</span></div>
         </div>
-        {links.map((l) => (
-          <a key={l.name} className="ch-row" href={l.href} target="_blank" rel="noopener" onClick={() => setTimeout(onClose, 300)}>
-            <i style={l.style}>{l.glyph}</i>{l.name}<span className="go">›</span>
-          </a>
-        ))}
+        <a className="ch-row ch-apple" href={apple ?? undefined} target="_blank" rel="noopener" onClick={() => setTimeout(onClose, 300)}>
+          <i style={{ background: "linear-gradient(135deg,#ff5f6d,#fa233b)" }}>♪</i>
+          <span>Listen on Apple Music<small>Opens in the Music app</small></span>
+          <span className="go">›</span>
+        </a>
+        <a className="ch-row" href={track ? youtubeMusicUrl(track) : undefined} target="_blank" rel="noopener" onClick={() => setTimeout(onClose, 300)}>
+          <i style={{ background: "#ff0033" }}>▶</i>YouTube Music<span className="go">›</span>
+        </a>
       </div>
       <button className="ch-cancel" onClick={onClose}>Cancel</button>
     </div>

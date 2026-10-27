@@ -15,6 +15,31 @@ export type MixTrack = Track & {
   again?: boolean;
 };
 
+// Your own music (Beark the artist, separate from the DJ radio)
+export type WorkTrack = {
+  title: string; // hidden as "Track 1, Track 2…" until someone unlocks
+  audio?: string; // leave out until the track is mastered
+};
+
+export type Work = {
+  id: string;
+  kind: "Album" | "EP" | "Single";
+  title: string;
+  artist: string;
+  year?: number;
+  released?: string; // release date, YYYY-MM-DD
+  art: string;
+  preview?: string; // 30-second preview anyone can hear
+  songCount?: string; // optional label like "3.5 songs"
+  tracks: WorkTrack[];
+};
+
+export type Artist = {
+  name: string;
+  photo?: string; // add after your photoshoot
+  bio: string;
+};
+
 export type Session = {
   title: string;
   subtitle: string;
@@ -28,6 +53,9 @@ export type Session = {
   heavyRotation: Track[];
   tracks: MixTrack[];
   moreToday: Track[];
+  artist: Artist;
+  works: Work[];
+  unlockHash: string;
 };
 
 export const session: Session = {
@@ -71,4 +99,39 @@ export const session: Session = {
     { title: "SLICK (Remix)", artist: "Victony ft. Don Toliver & Summer Walker", genre: "Afrobeats", year: 2026, art: "/mix/covers/slick-remix.jpg" },
     { title: "STARLIFE", artist: "Victony ft. Blaqbonez & YKB", album: "STARLIFE", genre: "Afrobeats", year: 2026, art: "/mix/covers/starlife.jpg" },
   ],
+  artist: {
+    name: "Beark",
+    photo: "/mix/works/artist.jpg",
+    bio: "Producer and artist. Unreleased music lives here first.",
+  },
+  works: [
+    {
+      id: "10",
+      kind: "Album",
+      title: "10",
+      artist: "Beark",
+      year: 2026,
+      released: "2026-10-10",
+      art: "/mix/works/10.jpg",
+      preview: "/mix/works/10-preview.mp3",
+      tracks: [
+        { title: "Track 1" }, { title: "Track 2" }, { title: "Track 3" }, { title: "Track 4" },
+        { title: "Track 5" }, { title: "Track 6" }, { title: "Track 7" }, { title: "Track 8" },
+        { title: "Track 9" }, { title: "Track 10" }, { title: "Track 11" }, { title: "Track 12" },
+      ],
+    },
+    {
+      id: "3-5",
+      kind: "EP",
+      title: "3.5",
+      artist: "Beark",
+      year: 2025,
+      released: "2025-12-08",
+      art: "/mix/works/3-5.jpg",
+      songCount: "3.5 songs",
+      tracks: [{ title: "Track 1" }, { title: "Track 2" }, { title: "Track 3" }, { title: "Track 4" }],
+    },
+  ],
+  // SHA-256 of the password (default password: beark10). See the steps to change it.
+  unlockHash: "fb59348b7545e8b9e520990878a253a240eff2c0e78a616a4a536decb50faca9",
 };

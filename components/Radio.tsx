@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { session as S, type MixTrack, type Track } from "@/lib/session";
-import { ago, artFor, clock, fmt, toSec } from "@/lib/utils";
+import { session as S, type MixTrack, type Track, type Work } from "@/lib/session";
+import { ago, artFor, clock, fmt, shareLink, toSec } from "@/lib/utils";
 import { HeavyCard, Rail, Tile } from "./Cards";
 import { About, Avatar, Chooser, ICON, MiniPlayer, SongSheet } from "./Overlays";
+import { AlbumSheet, ArtistSheet, PasswordPrompt, Toast, WorkCard } from "./Works";
 
 type Phase = "soon" | "live" | "replay" | "expired";
 type Mode = "live" | "replay" | null;
@@ -24,6 +25,8 @@ const currentTrack = (pos: number) => {
   for (const t of tracks) if (t.sec <= pos) c = t;
   return c?.again && c.ref ? c.ref : c;
 };
+const PREVIEW_SECONDS = 30;
+const UNLOCK_KEY = "bearkfm-unlocked";
 const mixSecOf = (t: Track | null) =>
   t ? tracks.find((o) => !o.again && o.title === t.title && o.artist === t.artist)?.sec ?? null : null;
 
@@ -33,6 +36,7 @@ export default function Radio() {
   const [times, setTimes] = useState<{ start: number; until: number; loadedAt: number } | null>(null);
   const [now, setNow] = useState(0);
   const [wide, setWide] = useState(false);
+  const [unlocked, setUnlocked] = useState(false); // album password entered on this device
 
   useEffect(() => {
     const mq = matchMedia("(min-width: 900px)");
@@ -46,6 +50,9 @@ export default function Radio() {
         until = start + 864e5;
       }
       setTimes({ start, until, loadedAt: Date.now() });
+      try {
+        setUnlocked(localStorage.getItem(UNLOCK_KEY) === S.unlockHash);
+      } catch {}
       setNow(Date.now());
       onMq();
     }, 0);
@@ -76,6 +83,55 @@ export default function Radio() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [pageTrack, setPageTrack] = useState<Track | null>(null);
   const [chooserTrack, setChooserTrack] = useState<Track | null>(null);
+
+  /* ---------- your albums & EPs (separate player) ---------- */
+  const ownRef = useRef<HTMLAudioElement>(null);
+  const [own, setOwn] = useState<{ work: Work; index: number; preview: boolean } | null>(null);
+  const [ownPlaying, setOwnPlaying] = useState(false);
+  const [ownTime, setOwnTime] = useState(0);
+  const [ownDur, setOwnDur] = useState(0);
+  const [album, setAlbum] = useState<Work | null>(null);
+  const [artistOpen, setArtistOpen] = useState(false);
+  const [ask, setAsk] = useState<{ work: Work; index: number } | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const say = (text: string) => {
+    setToast(text);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3200);
+  };
+
+  const startOwn = (work: Work, index: number, src: string, preview: boolean) => {
+    const a = ownRef.current!;
+    audioRef.current?.pause(); // stop the radio
+    if (!own || own.work.id !== work.id || own.index !== index || own.preview !== preview) {
+      a.src = src;
+      setOwn({ work, index, preview });
+      setOwnTime(0);
+      setOwnDur(0);
+    }
+    a.play().catch(() => say("That track isn't uploaded yet."));
+  };
+
+  // Tapping play on an album or a track
+  const playOwn = (work: Work, index: number) => {
+    const a = ownRef.current!;
+    if (own && own.work.id === work.id && own.index === index && !a.paused) return a.pause();
+    const track = work.tracks[index];
+    if (unlocked && track.audio) return startOwn(work, index, track.audio, false);
+    if (index === 0 && work.preview && !(own?.preview && own.work.id === work.id && ownTime >= PREVIEW_SECONDS))
+      return startOwn(work, 0, work.preview, !unlocked);
+    if (!unlocked) return setAsk({ work, index });
+    say("Still mastering this one. Check back soon.");
+  };
+
+  const toggleOwn = () => {
+    if (!own) return;
+    const a = ownRef.current!;
+    if (!a.paused) a.pause();
+    else if (own.preview && ownTime >= PREVIEW_SECONDS) setAsk({ work: own.work, index: own.index });
+    else a.play().catch(() => {});
+  };
 
   const start = times?.start ?? 0;
   const end = start + LEN * 1000;
@@ -120,6 +176,8 @@ export default function Radio() {
   const toggle = () => {
     const a = audioRef.current!;
     if (!a.paused) return a.pause();
+    ownRef.current?.pause(); // stop your album
+    setOwn(null);
     if (phase === "live") joinLive();
     else if (phase === "replay") {
       if (modeRef.current !== "replay") startReplay(0);
@@ -138,6 +196,23 @@ export default function Radio() {
   }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // lock screen / control centre info
+  useEffect(() => {
+    if (!ownPlaying || !own || !("mediaSession" in navigator)) return;
+    const art = new URL(own.work.art, location.href).href;
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: unlocked ? own.work.tracks[own.index].title : `Track ${own.index + 1}`,
+      artist: `${own.work.artist} · ${own.work.title}${own.preview ? " (Preview)" : ""}`,
+      album: own.work.title,
+      artwork: [{ src: art, sizes: "600x600", type: "image/jpeg" }],
+    });
+    try {
+      const seek = !own.preview;
+      navigator.mediaSession.setActionHandler("seekto", seek ? (d) => (ownRef.current!.currentTime = d.seekTime ?? 0) : null);
+      navigator.mediaSession.setActionHandler("seekbackward", seek ? () => (ownRef.current!.currentTime -= 15) : null);
+      navigator.mediaSession.setActionHandler("seekforward", seek ? () => (ownRef.current!.currentTime += 15) : null);
+    } catch {}
+  }, [own, ownPlaying, unlocked]);
+
   useEffect(() => {
     if (!playing || !("mediaSession" in navigator) || !phase) return;
     const t = cur;
@@ -186,20 +261,35 @@ export default function Radio() {
     icon = playing ? ICON.pause : ICON.play;
   }
 
+  let miniTrack: Track | null = cur;
+  let miniToggle = toggle;
+  let miniDisabled = phase === "soon";
+  if (own) {
+    miniTrack = { title: own.work.title, artist: own.work.artist, art: own.work.art };
+    miniTitle = unlocked ? own.work.tracks[own.index].title : `Track ${own.index + 1}`;
+    miniSub = `${own.work.artist} · ${own.work.title}${own.preview ? " · Preview" : ""}`;
+    icon = ownPlaying ? ICON.pause : ICON.play;
+    miniToggle = toggleOwn;
+    miniDisabled = false;
+  }
+
   const d = duration || LEN;
   const c = mode === "replay" ? curTime : 0;
-  const progress =
-    phase === "replay" ? (
-      <>
-        <input
-          type="range" min={0} max={1000} value={Math.round((c / d) * 1000)}
-          onChange={(e) => {
+  const progress = own ? (
+    <Scrubber
+      cur={ownTime}
+      dur={own.preview ? Math.min(ownDur || PREVIEW_SECONDS, PREVIEW_SECONDS) : ownDur}
+      onSeek={(t) => (ownRef.current!.currentTime = t)}
+    />
+  ) : phase === "replay" ? (
+    <Scrubber
+      cur={c}
+      dur={d}
+      onSeek={(t) => {
             if (modeRef.current !== "replay") startReplay(0);
-            audioRef.current!.currentTime = (Number(e.target.value) / 1000) * d;
+        audioRef.current!.currentTime = t;
           }}
         />
-        <div className="times"><span>{fmt(c)}</span><span>-{fmt(d - c)}</span></div>
-      </>
     ) : (
       <div className="liveline">{live ? "LIVE" : "SOON"}</div>
     );
@@ -271,6 +361,23 @@ export default function Radio() {
               </Rail>
             </section>
 
+            {S.works.length > 0 && (
+              <section className="section">
+                <h2 className="link" onClick={() => setArtistOpen(true)}>{S.artist.name} <Chevron /></h2>
+                <p className="note">Unreleased. Only on bearkFM until it drops.</p>
+                <Rail count={S.works.length}>
+                  {S.works.map((w) => (
+                    <WorkCard
+                      key={w.id}
+                      work={w}
+                      playing={ownPlaying && own?.work.id === w.id}
+                      onOpen={() => setAlbum(w)}
+                    />
+                  ))}
+                </Rail>
+              </section>
+            )}
+
             <footer>Up today only · bearkFM</footer>
           </main>
         )}
@@ -278,13 +385,13 @@ export default function Radio() {
 
       {phase && phase !== "expired" && (
         <MiniPlayer
-          track={cur}
+          track={miniTrack}
           title={miniTitle}
           sub={miniSub}
           icon={icon}
-          disabled={phase === "soon"}
-          onToggle={toggle}
-          onOpen={() => openSong(cur)}
+          disabled={miniDisabled}
+          onToggle={miniToggle}
+          onOpen={() => (own ? setAlbum(own.work) : openSong(miniTrack))}
         />
       )}
 
@@ -307,15 +414,86 @@ export default function Radio() {
         onJump={() => jumpSec !== null && startReplay(jumpSec)}
         onChoose={() => setChooserTrack(pageTrack)}
         onClose={() => setSheetOpen(false)}
-        dockTitle={cur?.title ?? S.title}
-        dockSub={cur?.artist ?? S.subtitle}
+        dockTitle={own ? miniTitle : cur?.title ?? S.title}
+        dockSub={own ? String(miniSub) : cur?.artist ?? S.subtitle}
         progress={progress}
-        bigIcon={playing ? (live && mode === "live" ? ICON.stop : ICON.pause) : ICON.play}
-        bigDisabled={phase === "soon"}
-        onToggle={toggle}
+        bigIcon={own ? (ownPlaying ? ICON.pause : ICON.play) : playing ? (live && mode === "live" ? ICON.stop : ICON.pause) : ICON.play}
+        bigDisabled={!own && phase === "soon"}
+        onToggle={own ? toggleOwn : toggle}
+        onShare={async () => {
+          const what = pageTrack ? `${pageTrack.title} · ${S.title}` : S.title;
+          const result = await shareLink(what, location.origin + location.pathname);
+          if (result === "copied") say("Link copied");
+          if (result === "failed") say("Couldn't share. Copy the link from the address bar.");
+        }}
       />
 
+      <ArtistSheet
+        open={artistOpen}
+        artist={S.artist}
+        works={S.works}
+        onClose={() => setArtistOpen(false)}
+        onWork={(w) => setAlbum(w)}
+      />
+
+      <AlbumSheet
+        work={album}
+        unlocked={unlocked}
+        nowIndex={own && album && own.work.id === album.id ? own.index : null}
+        playing={!!(ownPlaying && own && album && own.work.id === album.id)}
+        onClose={() => setAlbum(null)}
+        onPlay={() => {
+          if (!album) return;
+          if (own && own.work.id === album.id) toggleOwn();
+          else playOwn(album, 0);
+        }}
+        onTrack={(i) => album && playOwn(album, i)}
+        onUnlock={() => album && setAsk({ work: album, index: 0 })}
+        onArtist={() => setArtistOpen(true)}
+      />
+
+      <PasswordPrompt
+        open={!!ask}
+        hash={S.unlockHash}
+        onCancel={() => setAsk(null)}
+        onSuccess={() => {
+          const target = ask;
+          setAsk(null);
+          setUnlocked(true);
+          try {
+            localStorage.setItem(UNLOCK_KEY, S.unlockHash);
+          } catch {}
+          const t = target && target.work.tracks[target.index];
+          if (target && t?.audio) startOwn(target.work, target.index, t.audio, false);
+          else say("Unlocked. Tracks play here as soon as they're mastered.");
+        }}
+      />
+
+      <Toast text={toast} />
+
       <Chooser track={chooserTrack} onClose={() => setChooserTrack(null)} />
+
+      <audio
+        ref={ownRef}
+        preload="none"
+        playsInline
+        onLoadedMetadata={(e) => setOwnDur(e.currentTarget.duration)}
+        onTimeUpdate={(e) => {
+          const t = e.currentTarget.currentTime;
+          setOwnTime(t);
+          // preview ends after 30 seconds, then ask for the password
+          if (own?.preview && t >= PREVIEW_SECONDS) {
+            e.currentTarget.pause();
+            setAsk({ work: own.work, index: 1 });
+          }
+        }}
+        onPlay={() => setOwnPlaying(true)}
+        onPause={() => setOwnPlaying(false)}
+        onEnded={() => {
+          setOwnPlaying(false);
+          if (own?.preview) setAsk({ work: own.work, index: 1 });
+        }}
+      />
 
       <audio
         ref={audioRef}
@@ -338,6 +516,19 @@ export default function Radio() {
             e.currentTarget.currentTime = liveElapsed();
         }}
       />
+    </>
+  );
+}
+
+function Scrubber({ cur, dur, onSeek }: { cur: number; dur: number; onSeek: (t: number) => void }) {
+  const d = dur || 1;
+  return (
+    <>
+      <input
+        type="range" min={0} max={1000} value={Math.round((cur / d) * 1000) || 0}
+        onChange={(e) => onSeek((Number(e.target.value) / 1000) * d)}
+      />
+      <div className="times"><span>{fmt(cur)}</span><span>-{fmt(Math.max(0, d - cur))}</span></div>
     </>
   );
 }
